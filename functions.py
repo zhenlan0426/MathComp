@@ -12,6 +12,7 @@ import json
 import re
 
 config_map = {'PrefixTuningConfig':PrefixTuningConfig,'PromptEncoderConfig':PromptEncoderConfig,'LoraConfig':LoraConfig}
+get_name = lambda x: x.split('/')[-1]
 
 def random_peft_config():
     config_type = np.random.choice(['PrefixTuningConfig','PromptEncoderConfig','LoraConfig'])
