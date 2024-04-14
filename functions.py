@@ -6,6 +6,7 @@ from peft import (
     # PromptTuningConfig,
     LoraConfig)
 import numpy as np
+import torch
 import random
 import os
 import json
@@ -48,7 +49,7 @@ def sample_consecutive_chunk(input_list, max_length):
     out[0] = input_list[0] # Start of sentence has to be included
     return out
 
-def create_next_model_folder(base_path="../Model/FT"):
+def create_next_model_folder(base_path="../Model/FT",make_folder=True):
     # List all items in the base directory
     all_items = os.listdir(base_path)
     # Filter for folders that follow the naming pattern "modelX"
@@ -60,7 +61,8 @@ def create_next_model_folder(base_path="../Model/FT"):
     new_folder_name = f"model{highest_number + 1}"
     new_folder_path = os.path.join(base_path, new_folder_name)
     # Create the new folder
-    os.makedirs(new_folder_path, exist_ok=True)
+    if make_folder:
+        os.makedirs(new_folder_path, exist_ok=True)
     # Return the new folder path
     return new_folder_path
 
@@ -85,3 +87,40 @@ def clean_author(text):
     # Replace all occurrences of the email pattern with an empty string
     cleaned_text = re.sub(email_pattern, '', cleaned_text)
     return cleaned_text
+
+class sentence_transformers(object):
+    def __init__(self,model,tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.loss_fn = torch.nn.BCEWithLogitsLoss()
+        self.cos_sim = torch.nn.CosineSimilarity()
+    
+    @staticmethod
+    def transform_query(query: str) -> str:
+        """ For retrieval, add the prompt for query (not for documents)."""
+        return f'Represent this sentence for searching relevant passages: {query}'
+
+    def encode(self,docs,IsQuery=False,batch_size=32):
+        # docs are a list of string
+        out = []
+        if IsQuery:
+            docs = [self.transform_query(d) for d in docs]
+        for i in range(0,len(docs),batch_size):
+            inputs = self.tokenizer.batch_encode_plus(docs[i:i+batch_size], \
+                                                 padding=True, \
+                                                 return_attention_mask=True,\
+                                                 truncation=True,\
+                                                 max_length=self.model.config.max_position_embeddings,\
+                                                 return_tensors='pt').to(self.model.device)
+            with torch.no_grad():
+                out.append(self.model(**inputs).last_hidden_state[:,0].detach().cpu().numpy())
+        return np.concatenate(out)
+    
+    def get_loss(self,context,query,score):
+        # context,query are outputs from tokenizer.batch_encode_plus
+        # score is max(P_ij - P_j,0) the incremental success rate with/wo context
+        context_v = self.model(**context).last_hidden_state[:,0] # (batch,d)
+        query_v = self.model(**query).last_hidden_state[:,0]
+        logits = self.cos_sim(context_v,query_v)
+        loss = self.loss_fn(logits,score)
+        return loss
