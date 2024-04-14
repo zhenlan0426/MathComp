@@ -1,44 +1,45 @@
-from peft import (
-    get_peft_model,
-    PeftType,
-    PrefixTuningConfig,
-    PromptEncoderConfig,
-    # PromptTuningConfig,
-    LoraConfig)
+# from peft import (
+#     get_peft_model,
+#     PeftType,
+#     PrefixTuningConfig,
+#     PromptEncoderConfig,
+#     # PromptTuningConfig,
+#     LoraConfig)
 import numpy as np
 import torch
+from transformers import LogitsProcessor
 import random
 import os
 import json
 import re
 
-config_map = {'PrefixTuningConfig':PrefixTuningConfig,'PromptEncoderConfig':PromptEncoderConfig,'LoraConfig':LoraConfig}
-get_name = lambda x: x.split('/')[-1]
+# config_map = {'PrefixTuningConfig':PrefixTuningConfig,'PromptEncoderConfig':PromptEncoderConfig,'LoraConfig':LoraConfig}
+# get_name = lambda x: x.split('/')[-1]
 
-def random_peft_config():
-    config_type = np.random.choice(['PrefixTuningConfig','PromptEncoderConfig','LoraConfig'])
-    if config_type == 'PrefixTuningConfig':
-        config_kwargs = dict(task_type = 'CAUSAL_LM',
-                            num_virtual_tokens = int(np.random.choice([8,16,24])), 
-                            encoder_hidden_size = int(np.random.choice([512,1024])), 
-                            prefix_projection = np.random.choice([True,False]),
-                            )
-    elif config_type == 'PromptEncoderConfig':
-        config_kwargs = dict(task_type = 'CAUSAL_LM', 
-                            num_virtual_tokens = int(np.random.choice([8,16,24])), 
-                            encoder_hidden_size = int(np.random.choice([1024,2048,4096])),
-                            encoder_dropout = float(np.random.rand()*0.25),
-                            encoder_num_layers = int(np.random.choice([1,2])),
-                            encoder_reparameterization_type = np.random.choice(['MLP','LSTM'])
-                            )
-    elif config_type == 'LoraConfig':
-        config_kwargs = dict(r=int(np.random.choice([8,16])),
-                            lora_alpha = 16,
-                            lora_dropout = float(np.random.rand()*0.25), 
-                            bias=np.random.choice(['none', 'all' , 'lora_only' ]),
-                            target_modules = ["q_proj","k_proj", "v_proj","o_proj"] if np.random.rand()<0.5 else ["q_proj","k_proj", "v_proj","o_proj","gate_proj", "up_proj", "down_proj" ]
-                            )
-    return {'config_type':config_type,'config_kwargs':config_kwargs}
+# def random_peft_config():
+#     config_type = np.random.choice(['PrefixTuningConfig','PromptEncoderConfig','LoraConfig'])
+#     if config_type == 'PrefixTuningConfig':
+#         config_kwargs = dict(task_type = 'CAUSAL_LM',
+#                             num_virtual_tokens = int(np.random.choice([8,16,24])), 
+#                             encoder_hidden_size = int(np.random.choice([512,1024])), 
+#                             prefix_projection = np.random.choice([True,False]),
+#                             )
+#     elif config_type == 'PromptEncoderConfig':
+#         config_kwargs = dict(task_type = 'CAUSAL_LM', 
+#                             num_virtual_tokens = int(np.random.choice([8,16,24])), 
+#                             encoder_hidden_size = int(np.random.choice([1024,2048,4096])),
+#                             encoder_dropout = float(np.random.rand()*0.25),
+#                             encoder_num_layers = int(np.random.choice([1,2])),
+#                             encoder_reparameterization_type = np.random.choice(['MLP','LSTM'])
+#                             )
+#     elif config_type == 'LoraConfig':
+#         config_kwargs = dict(r=int(np.random.choice([8,16])),
+#                             lora_alpha = 16,
+#                             lora_dropout = float(np.random.rand()*0.25), 
+#                             bias=np.random.choice(['none', 'all' , 'lora_only' ]),
+#                             target_modules = ["q_proj","k_proj", "v_proj","o_proj"] if np.random.rand()<0.5 else ["q_proj","k_proj", "v_proj","o_proj","gate_proj", "up_proj", "down_proj" ]
+#                             )
+#     return {'config_type':config_type,'config_kwargs':config_kwargs}
 
 def sample_consecutive_chunk(input_list, max_length):
     if len(input_list) <= max_length:
@@ -49,7 +50,7 @@ def sample_consecutive_chunk(input_list, max_length):
     out[0] = input_list[0] # Start of sentence has to be included
     return out
 
-def create_next_model_folder(base_path="../Model/FT",make_folder=True):
+def create_next_model_folder(base_path="../Model/FT"):
     # List all items in the base directory
     all_items = os.listdir(base_path)
     # Filter for folders that follow the naming pattern "modelX"
@@ -61,8 +62,7 @@ def create_next_model_folder(base_path="../Model/FT",make_folder=True):
     new_folder_name = f"model{highest_number + 1}"
     new_folder_path = os.path.join(base_path, new_folder_name)
     # Create the new folder
-    if make_folder:
-        os.makedirs(new_folder_path, exist_ok=True)
+    os.makedirs(new_folder_path, exist_ok=True)
     # Return the new folder path
     return new_folder_path
 
@@ -124,3 +124,48 @@ class sentence_transformers(object):
         logits = self.cos_sim(context_v,query_v)
         loss = self.loss_fn(logits,score)
         return loss
+    
+
+class DigitsOnlyLogitsProcessor(LogitsProcessor):
+    def __init__(self, tokenizer):
+        # 102400 is the out_features of lm_head
+        super().__init__()
+        allowed_token_ids = [tokenizer.convert_tokens_to_ids(str(digit)) for digit in range(10)]
+        eos_token = tokenizer.eos_token_id
+        if eos_token is not None:
+            allowed_token_ids.append(eos_token)
+        self.token_mask = torch.full((102400,), -float('Inf'), dtype=torch.float, device='cuda')
+        self.token_mask[allowed_token_ids] = 0
+    
+    def __call__(self, input_ids, scores):
+        # Mask logits for tokens that are not allowed
+        scores += self.token_mask
+        return scores
+    
+class NoRepeatTokenLogitsProcessor(LogitsProcessor):
+    def __init__(self):
+        super().__init__()
+        # Create a set of token IDs for the disallowed tokens
+        self.disallowed_token_ids = {185,207,10,12,9} # "\n"," ", +, -, *
+        
+    def __call__(self, input_ids, scores):
+        if input_ids.shape[1] > 0:
+            last_token_id = input_ids[:, -1].item()
+            if last_token_id in self.disallowed_token_ids:
+                scores[:, last_token_id] = float('-inf')
+        return scores
+    
+def naive_parse(answer):
+    out = []
+    start = False
+    end = False
+    for l in reversed(list(answer)):
+        if l in '0123456789' and not end:
+            start = True
+            out.append(l)
+        else:
+            if start:
+                end = True
+        
+    out = reversed(out)
+    return int(''.join(out))
