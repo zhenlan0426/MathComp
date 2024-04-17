@@ -12,9 +12,10 @@ import random
 import os
 import json
 import re
+from collections import Counter
 
+get_name = lambda x: x.split('/')[-1]
 # config_map = {'PrefixTuningConfig':PrefixTuningConfig,'PromptEncoderConfig':PromptEncoderConfig,'LoraConfig':LoraConfig}
-# get_name = lambda x: x.split('/')[-1]
 
 # def random_peft_config():
 #     config_type = np.random.choice(['PrefixTuningConfig','PromptEncoderConfig','LoraConfig'])
@@ -65,12 +66,6 @@ def create_next_model_folder(base_path="../Model/FT"):
     os.makedirs(new_folder_path, exist_ok=True)
     # Return the new folder path
     return new_folder_path
-
-# class JSONEncoder(json.JSONEncoder):
-#     def default(self, obj):
-#         if isinstance(obj, (np.integer, np.floating, np.ndarray)):
-#             return obj.item() if obj.shape == () else obj.tolist()
-#         return super(JSONEncoder, self).default(obj)
     
 def clean_author(text):
     # Trim trailing newline characters
@@ -169,3 +164,29 @@ def naive_parse(answer):
         
     out = reversed(out)
     return int(''.join(out))
+
+def gen_prompt(problem):
+    
+    return f"""
+### Instruction:\n{problem}\n\n
+### Response: Let's think step by step. The final response should be a single number in the last line of your response.
+"""
+
+def gen_code(problem,solution):
+    
+    return f"""
+### Instruction:\n{problem}\n
+### Solution:\n{solution}\n
+### Response: Let's think step by step. Given the Instruction and solution, write python code to execute the calculation. The code should be
+enclosed between ```python\n actual code...``` and should only print the final answer.
+"""
+
+def aggregate(answers):
+    pred = Counter(answers).most_common(2)
+    if len(pred) == 1:
+        if pred[0][0] == "parsing error":
+            return 37
+        else:
+            return pred[0][0]
+    else:
+        return pred[1][0] if pred[0][0] == "parsing error" else pred[0][0]
