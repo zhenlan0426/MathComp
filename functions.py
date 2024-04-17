@@ -190,3 +190,15 @@ def aggregate(answers):
             return pred[0][0]
     else:
         return pred[1][0] if pred[0][0] == "parsing error" else pred[0][0]
+
+def logprob_agg(answers,normalize):
+    # answers [(answer, cum_logprob, lens),...]
+    def compare(answer_tuple):
+        answer, cum_logprob, lens = answer_tuple
+        if answer == 'parsing error':
+            return float('-inf')
+        elif normalize:
+            return cum_logprob/lens
+        else:
+            return cum_logprob
+    return max(answers,key=compare)[0]
