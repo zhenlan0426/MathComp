@@ -18,7 +18,7 @@ max_depth = 16
 max_pct = 0.8
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01" #_merged_code_policy_01SFT
-log_data = pd.read_csv('training_log.csv') # TODO: create log with latest results
+
 
 #### Model
 llm = LLM(model=MODEL_PATH,
@@ -304,7 +304,12 @@ def delete_py_files(folder):
 # Example usage
 folder_path = 'temp'
 delete_py_files(folder_path)
-
+def repl(match):
+    if "real" not in match.group():
+        return "{}{}".format(match.group()[:-1], ', real=True)')
+    else:
+        return "{}{}".format(match.group()[:-1], ')')
+    
 from multiprocessing import Pool
 from itertools import chain
 
@@ -322,6 +327,7 @@ def process_paths(args):
             continue
         code = "from sympy import *\n" + input.split('```')[1][7:] 
         node = '```'.join(splits[:4]) # only return up to the first python code. later code/reason not relevant
+        code = re.sub(r"symbols\([^)]+\)", repl, code)
         # execute code
         with open(f'temp/code_{idx}_{j}.py', 'w') as fout:
             fout.write(code)
@@ -379,6 +385,7 @@ with open(f"../llmOutputs/PRM/completed_paths_code{version}.pickle", "wb") as f:
     pickle.dump(completed_paths, f)
 with open(f"../llmOutputs/PRM/completed_paths_y_code{version}.pickle", "wb") as f:
     pickle.dump(completed_paths_y, f)
+
     
 # performance report
 import csv
@@ -388,6 +395,7 @@ auc = roc_auc_score(data.iloc[:,0].values,data.iloc[:,1].values)
 mean_acc = data.iloc[:,0].mean() * 975
 max_acc = data.groupby(['prob_i']).isCorrect.max().sum()
 value_counts = json.dumps(data.exit_i.value_counts().to_dict())
+log_data = pd.read_csv('training_log.csv')
 _,_,best_mean_acc,best_max_acc,_ = log_data.iloc[-1].tolist()
 with open('training_log.csv', mode='a', newline='') as log_file:
     log_writer = csv.writer(log_file)
