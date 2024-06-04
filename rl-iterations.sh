@@ -24,7 +24,7 @@ run_python_script() {
     pkill python3
 }
 
-for i in {6..16}; do
+for i in {7..16}; do
     echo "Running iteration: $i"
     run_python_script "vllm" "vllm_gen.py" "$i"
     run_python_script "torch" "train_value.py" "$i"

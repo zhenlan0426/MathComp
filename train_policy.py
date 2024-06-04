@@ -178,3 +178,6 @@ peft_model_id = f"../Model/PRM_LORA{next_version}_code_policy_01"
 base_model = PeftModel.from_pretrained(model, peft_model_id)
 base_model2 = base_model.merge_and_unload()
 base_model2.save_pretrained(f"../Model/PRM_LORA{next_version}_merged_code_policy_01")
+from transformers import AutoTokenizer
+tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
+tokenizer.save_pretrained(f"../Model/PRM_LORA{next_version}_merged_code_policy_01")

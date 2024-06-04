@@ -11,9 +11,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import subprocess
 import sys
 
-n = 3 # beams
-n_sol = 7
-samples = 7
+n = 1 # beams
+n_sol = 3
+samples = 16
 max_depth = 16
 max_pct = 0.8
 version = sys.argv[1]
