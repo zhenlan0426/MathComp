@@ -8,15 +8,18 @@ run_python_script() {
     local env_name=$1
     local script_name=$2
     local script_args=$3
-
+    mkdir -p ./logs
+    local output_file="./logs/output_${script_name%.*}_${script_args}.log"
+    
     echo "Activating $env_name and running $script_name"
     conda activate "$env_name"
-    output=$(python3 "$script_name" "$script_args" 2>&1)
+    # output=$(python3 "$script_name" "$script_args" 2>&1)
+    python3 "$script_name" "$script_args" > "$output_file" 2>&1
     status=$?
 
     if [ $status -ne 0 ]; then
         echo "$script_name failed with output:"
-        echo "$output"
+        # echo "$output"
         exit $status
     fi
     conda deactivate

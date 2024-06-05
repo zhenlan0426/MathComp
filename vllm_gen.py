@@ -61,8 +61,12 @@ import json
 with open('../Data/AMC/aime_normal.json', 'r') as file:
     df = json.load(file)
 # to have consistent format as in Kaggle
-df = pd.DataFrame(df)#.iloc[:24]
+df = pd.DataFrame(df)
 df.rename(columns={'question': 'problem'}, inplace=True)
+df.final_answer = df.final_answer.apply(lambda x:int(x[0]))
+df2 = pd.read_csv("../Data/ai-mathematical-olympiad-prize/train.csv")
+df2.rename(columns={'answer': 'final_answer'}, inplace=True)
+df = pd.concat([df2,df[['problem','final_answer']]],axis=0)
 
 #### functions
 def process_inputs(inputs):
@@ -209,19 +213,33 @@ def IsFinished(node):
     matches = re.findall(r'print\(([^)]*)\)', node)
     return len(matches)>0
 
+def sample_k(items, probabilities, k, temperature=0.25):
+    """Samples k items without replacement from a list based on probabilities, with temperature scaling."""
+    # Temperature scaling
+    scaled_probs = np.exp(np.array(probabilities)/temperature)
+    normalized_probs = scaled_probs / np.sum(scaled_probs)  # Normalize scaled probs
+
+    # Sampling
+    sampled_items = np.random.choice(
+        items, size=k, replace=False, p=normalized_probs
+    )
+    return sampled_items
+
 def get_next_node(prm_inputs,prm_scores,completed_paths):
     # need to update completed_paths in-place
     next_level_nodes = []
-    combined = list(zip(prm_inputs,prm_scores))
-    combined.sort(key=lambda x: x[1], reverse=True)  # Sort nodes by their scores
-    max_score = combined[0][1]
+    next_level_scores = []
+    combined = list(zip(prm_inputs,prm_scores))    
     for node,score in combined:
         finish = IsFinished(node)
         if finish: # finished
             completed_paths.append((score,node))
         else: # not inished
-            if len(next_level_nodes) < n:
-                next_level_nodes.append(node)
+            next_level_nodes.append(node)
+            next_level_scores.append(score)
+    if len(next_level_nodes) < n:
+        return next_level_nodes
+    next_level_nodes = sample_k(next_level_nodes, next_level_scores, n)
     return next_level_nodes
 
 def get_next_nodes(prm_inputs,prm_scores,lengths):
@@ -333,7 +351,7 @@ def process_paths(args):
             fout.write(code)
         # timeout err
         try:
-            process = subprocess.run([sys.executable, f'temp/code_{idx}_{j}.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7.1)
+            process = subprocess.run([sys.executable, f'temp/code_{idx}_{j}.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7.5)
         except subprocess.TimeoutExpired:
             out.append([0,path[0],node,code,idx,2])
             with open(f'temp/2/code_{idx}_{j}.py', 'w') as fout:
@@ -369,7 +387,7 @@ def process_paths(args):
     return out
 
 # Prepare arguments for multiprocessing
-ys = df.final_answer.apply(lambda x:int(x[0])).tolist()
+ys = df.final_answer.tolist()
 arguments = [(paths, y, idx) for idx, (paths, y) in enumerate(zip(completed_paths, ys))]
 with Pool(processes=16) as pool:
     results = pool.map(process_paths, arguments)
