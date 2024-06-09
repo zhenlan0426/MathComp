@@ -16,6 +16,7 @@ n_sol = 3
 samples = 16
 max_depth = 16
 max_pct = 0.8
+temperature = 0.5
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01" #_merged_code_policy_01SFT
 
@@ -30,6 +31,8 @@ llm = LLM(model=MODEL_PATH,
           kv_cache_dtype="fp8_e5m2",
           tensor_parallel_size=1)
 tokenizer = llm.get_tokenizer()
+
+# stop_words = [tokenizer.eos_token if tokenizer is not None and tokenizer.eos_token is not None else '</s>']
 stop_words = [tokenizer.eos_token,"```output","```Output","```output\n","```Output\n","```\nOutput" , ")\n```" , "``````output","``````Output"]
 # stop_words.append("\n")
 sampling_params = SamplingParams(temperature=1,
@@ -37,14 +40,23 @@ sampling_params = SamplingParams(temperature=1,
                                 #  min_tokens=32,
                                  stop=stop_words,
                                  include_stop_str_in_output=True)
+
+
 def gen_prompt_codeIn1(problem):
     return f"""Problem: {problem}\n
-To accomplish this, first determine a sympy-based approach for solving the problem by listing each step to take and what functions need to be called in each step. Be clear so even an idiot can follow your instructions, and your final answer should be integer, not expression, list, tuple or dictionary!
+Determine a sympy-based approach for solving the problem. When defining symbol, incorporate all constraints mentioned in the problem statement, e.g. real, integer, even, odd, positive, prime. If a variable represents a positive integer, Symbol('n', integer=True, positive=True). Your final answer should be integer, not expression, list, tuple or dictionary!
 Write the entire script covering all the steps (use comments and document it well) and print the final result.
 Approach:"""
+
 def gen_prompt_codeIn2(problem):
     return f"""Problem: {problem}\n
 You are an expert at solving math problem. Analyze this problem and think step by step to develop a python solution. Your solution should include reasoning steps in Python comments, explaining your thought process and the mathematical principles you applied. print the final output, as an integer not other python object such as list or tuple."""
+
+def gen_prompt3(problem):
+    return '''Problem: \n'''+problem+'''\n
+Carefully read and understand the problem and use all information in problem statement. No Python code. Show your work step-by-step, explain your reasoning, calculations, mathematical concepts and formulas in detail.
+Write your final answer as a single integer in the last line of your response, enclosed within \\boxed{}.
+'''
 
 from transformers import LlamaForSequenceClassification
 prm_tokenizer = tokenizer
@@ -69,21 +81,32 @@ df2.rename(columns={'answer': 'final_answer'}, inplace=True)
 df = pd.concat([df2,df[['problem','final_answer']]],axis=0)
 
 #### functions
+logit2prob = lambda x: 1/(1+np.exp(-x))
+def clean_text(x,remove_template):
+    x = re.sub(r"(<math>|<\/math>|<cmath>|<\/cmath>|\\begin\{align\*\}|\\end\{align\*\})", "", x)
+    if remove_template:
+        x = x.replace("User: ","").replace("\n\nAssistant:","")
+    return x
+
 def process_inputs(inputs):
     # inputs is a list of str
     outs = []
     for problem in inputs:
-        base_prompt1 = tokenizer.apply_chat_template([{"role": "user","content": gen_prompt_codeIn1(problem)}],tokenize=False)
-        base_prompt2 = tokenizer.apply_chat_template([{"role": "user","content": gen_prompt_codeIn2(problem)}],tokenize=False)
-        outs.append(base_prompt1)
-        outs.append(base_prompt2)
+        problem = clean_text(problem,False)
+        base_prompt1 = tokenizer.apply_chat_template([{"role": "user","content": gen_prompt_codeIn1(problem)}],tokenize=False,add_generation_prompt=True)
+        base_prompt2 = tokenizer.apply_chat_template([{"role": "user","content": gen_prompt_codeIn2(problem)}],tokenize=False,add_generation_prompt=True)
+        base_prompt3 = tokenizer.apply_chat_template([{"role": "user","content": gen_prompt3(problem)}],tokenize=False,add_generation_prompt=True)
+        # 21: remove [bos], which will get added in vllm.generate
+        outs.append(base_prompt1[21:])
+        outs.append(base_prompt2[21:])
+        outs.append(base_prompt3[21:])
     return outs
 
-logit2prob = lambda x: 1/(1+np.exp(-x))
 def eval_prm(candidates):
     all_log_probs = []
     for i in range(len(candidates)):
-        input_ids = prm_tokenizer.encode(candidates[i], return_tensors="pt").to("cuda")
+        text = clean_text(candidates[i],True)
+        input_ids = prm_tokenizer.encode(text, return_tensors="pt").to("cuda:1")
         with torch.no_grad():
             hidden_states = base_model(input_ids)[0][:,-1] # 1,l,d -> 1,d
             logits = prm_model.score(hidden_states)[0]
@@ -209,11 +232,43 @@ def filter_inputs(batch_responses,current_level_nodes,lengths):
             lengths.append(length)
     return prm_inputs,parent_list,lengths
 
-def IsFinished(node):
-    matches = re.findall(r'print\(([^)]*)\)', node)
-    return len(matches)>0
+def HasAnswer(text):
+    patterns = [
+        r'answer is.*\\boxed\{(.*?)\}',
+        r"answer is[:\s]*\$(.+?)\$",
+        r"answer is[:\s]*(.+)"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return True
+    return False
 
-def sample_k(items, probabilities, k, temperature=0.25):
+def extract_number(text):
+    patterns = [
+        r'answer is.*\\boxed\{(.*?)\}',
+        r"answer is[:\s]*\$(.+?)\$",
+        r"answer is[:\s]*(.+)"
+    ]
+    for pattern in patterns:
+        match = list(re.finditer(pattern, text))
+        if match:
+            out = match[-1].group(1)
+            try:
+                out = float(out)
+                return out
+            except:
+                return "error"
+    return "error"
+
+def IsFinished(node):
+    if "No Python code." in node:
+        return HasAnswer(node)
+    else:
+        matches = re.findall(r'print\(([^)]*)\)', node)
+        return len(matches)>0
+
+def sample_k(items, probabilities, k):
     """Samples k items without replacement from a list based on probabilities, with temperature scaling."""
     # Temperature scaling
     scaled_probs = np.exp(np.array(probabilities)/temperature)
@@ -241,6 +296,7 @@ def get_next_node(prm_inputs,prm_scores,completed_paths):
         return next_level_nodes
     next_level_nodes = sample_k(next_level_nodes, next_level_scores, n)
     return next_level_nodes
+
 
 def get_next_nodes(prm_inputs,prm_scores,lengths):
     # for completed_paths, next_level_nodes would be removed
@@ -275,11 +331,12 @@ def create_llm():
 
 #### generation
 current_level_nodes = process_inputs(df.problem.tolist())
-lengths = [2] * df.shape[0]
+lengths = [3] * df.shape[0]
 current_level = 1
 completed_paths = [[] for _ in range(df.shape[0])]
 data_V = []
 data_pi = []
+
 while (current_level < max_depth) and (current_level_nodes):
     # everything at this level is flattened
     current_level_nodes = repeat_elements(current_level_nodes,samples)
@@ -304,7 +361,7 @@ while (current_level < max_depth) and (current_level_nodes):
     prm_model.to('cpu')
     llm,tokenizer = create_llm()
     
-    current_level_nodes,lengths = get_next_nodes(prm_inputs,prm_scores,lengths)
+    current_level_nodes,lengths = get_next_nodes(prm_inputs,advantages,lengths)
     current_level += 1
 
 #### exec code
@@ -337,53 +394,59 @@ def process_paths(args):
     out = [] # (isCorrect,score,node,code,prob_i,exit_i)
     for j,path in enumerate(paths):# path (score,node)
         input = path[1]
-        if input[-12:]=="print(result": # stop token was not included. print(result) might miss a ")"
-            input += ")"
-        splits = input.split('```')
-        if len(splits) < 2:
-            out.append([0,path[0],path[1],'no code',idx,1])
-            continue
-        code = "from sympy import *\n" + input.split('```')[1][7:] 
-        node = '```'.join(splits[:4]) # only return up to the first python code. later code/reason not relevant
-        code = re.sub(r"symbols\([^)]+\)", repl, code)
-        # execute code
-        with open(f'temp/code_{idx}_{j}.py', 'w') as fout:
-            fout.write(code)
-        # timeout err
-        try:
-            process = subprocess.run([sys.executable, f'temp/code_{idx}_{j}.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7.5)
-        except subprocess.TimeoutExpired:
-            out.append([0,path[0],node,code,idx,2])
-            with open(f'temp/2/code_{idx}_{j}.py', 'w') as fout:
+        if "No Python code." in input:
+            yhat = extract_number(input)
+            if yhat == "error":
+                out.append([0,path[0],path[1],'no code',idx,7])
+            else:
+                out.append([int(y==yhat),path[0],path[1],'no code',idx,8])
+        else: # code
+            if input[-12:]=="print(result": # stop token was not included. print(result) might miss a ")"
+                input += ")"
+            splits = input.split('```')
+            if len(splits) < 2:
+                out.append([0,path[0],path[1],'no code',idx,1])
+                continue
+            code = "from sympy import *\n" + input.split('```')[1][7:]
+            node = '```'.join(splits[:4]) # only return up to the first python code. later code/reason not relevant
+            # execute code
+            with open(f'temp/code_{idx}_{j}.py', 'w') as fout:
                 fout.write(code)
-            continue
-        if process.stderr:# code.py err
-            out.append([0,path[0],node,code,idx,3])
-            code = code + '\n\n"""' + process.stderr.decode('utf-8') + '"""'
-            with open(f'temp/3/code_{idx}_{j}.py', 'w') as fout:
-                fout.write(code)           
-            continue
-        else:
-            stdout = process.stdout.decode('utf8')
+            # timeout err
             try:
-                answer = eval(stdout)
-                if is_integer(answer):
-                    out.append([int(int(answer)==y),path[0],node,code,idx,4])
-                    with open(f'temp/4/code_{idx}_{j}.py', 'w') as fout:
-                        fout.write(code)                     
-                    continue
-                else:
-                    out.append([0,path[0],node,code,idx,5])
-                    code = code + '\n\n"""' + stdout + '"""'
-                    with open(f'temp/5/code_{idx}_{j}.py', 'w') as fout:
-                        fout.write(code)          
-                    continue
-            except:
-                out.append([0,path[0],node,code,idx,6])
-                code = code + '\n\n"""' + stdout + '"""'
-                with open(f'temp/6/code_{idx}_{j}.py', 'w') as fout:
+                process = subprocess.run([sys.executable, f'temp/code_{idx}_{j}.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7.1)
+            except subprocess.TimeoutExpired:
+                out.append([0,path[0],node,code,idx,2])
+                with open(f'temp/2/code_{idx}_{j}.py', 'w') as fout:
                     fout.write(code)
                 continue
+            if process.stderr:# code.py err
+                out.append([0,path[0],node,code,idx,3])
+                code = code + '\n\n"""' + process.stderr.decode('utf-8') + '"""'
+                with open(f'temp/3/code_{idx}_{j}.py', 'w') as fout:
+                    fout.write(code)           
+                continue
+            else:
+                stdout = process.stdout.decode('utf8')
+                try:
+                    answer = eval(stdout)
+                    if is_integer(answer):
+                        out.append([int(int(answer)==y),path[0],node,code,idx,4])
+                        with open(f'temp/4/code_{idx}_{j}.py', 'w') as fout:
+                            fout.write(code)                     
+                        continue
+                    else:
+                        out.append([0,path[0],node,code,idx,5])
+                        code = code + '\n\n"""' + stdout + '"""'
+                        with open(f'temp/5/code_{idx}_{j}.py', 'w') as fout:
+                            fout.write(code)          
+                        continue
+                except:
+                    out.append([0,path[0],node,code,idx,6])
+                    code = code + '\n\n"""' + stdout + '"""'
+                    with open(f'temp/6/code_{idx}_{j}.py', 'w') as fout:
+                        fout.write(code)
+                    continue
     return out
 
 # Prepare arguments for multiprocessing

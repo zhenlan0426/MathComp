@@ -16,20 +16,42 @@ next_version = str(int(version) + 1)
 
 #### Data
 import pickle
+import re
+
+def clean_text(x,remove_template):
+    x = re.sub(r"(<math>|<\/math>|<cmath>|<\/cmath>|\\begin\{align\*\}|\\end\{align\*\})", "", x)
+    if remove_template:
+        x = x.replace("User: ","").replace("\n\nAssistant:","")
+    return x
+
+# RL data
 with open(f"../llmOutputs/PRM/data_V1_code{version}.pickle", "rb") as f:
     data_V = pickle.load(f)
-# with open("../llmOutputs/PRM/data_pi1.pickle", "rb") as f:
-#     data_pi = pickle.load(f)
 with open(f"../llmOutputs/PRM/completed_paths_y_code{version}.pickle", "rb") as f:
     completed_paths_y = pickle.load(f)
+
 data = []
 for text,y in data_V:
-    data.append([text.replace("<｜begin▁of▁sentence｜>User: ",""),y])
+    data.append([clean_text(text,True),y])
 for y,score,text,code,prob_i,exit_i in completed_paths_y:
-    data.append([text.replace("<｜begin▁of▁sentence｜>User: ",""),y])
+    data.append([clean_text(text,True),y])
+
+# SFT data # TODO: remove this later? if loss is too low, e.g. <0.1, overfit or topic classification
+# AIME (prompt included)
+with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
+    outs = pickle.load(f)
+with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
+    outs2 = pickle.load(f)
+for q,s in outs:
+    if np.random.rand()<0.5:
+        data.append([clean_text(q+s,True),1])
+for q,s in outs2:
+    if np.random.rand()<0.25:
+        data.append([clean_text(q+s,True),1])
 import random
 random.shuffle(data)
 texts,ys = zip(*data)
+
 from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
 texts = tokenizer.batch_encode_plus(texts,return_attention_mask=False,add_special_tokens=True,\
@@ -48,11 +70,10 @@ accumulation_steps = 64
 verbose = 1024
 lr = 6e-5
 clip = 6e-3
-from transformers import LlamaForSequenceClassification,BitsAndBytesConfig,AutoConfig
+from transformers import LlamaForSequenceClassification,BitsAndBytesConfig
 import torch
 from peft import (
     get_peft_model,
-    PeftType,
     LoraConfig)
 quantization_config = BitsAndBytesConfig(
     load_in_4bit = True,
@@ -168,7 +189,7 @@ base_model = PeftModel.from_pretrained(model, peft_model_id)
 base_model2 = base_model.merge_and_unload()
 base_model2.save_pretrained(f'../Model/PRM_LORA_merge{next_version}_code')
 
-if train_loss/count_loss<0.22:
+if train_loss/count_loss<0.37:
     sys.exit(0)
 else:
     print(f"train loss: {train_loss/count_loss}")

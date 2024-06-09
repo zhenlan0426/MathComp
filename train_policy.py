@@ -11,63 +11,124 @@ import os
 import sys
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 MAX_LEN = 1200
+neg_weight = 0.5
+SFT_weight = 1
+min_loss = -0.01
 
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01"
 next_version = str(int(version) + 1)
 
 #### Data
-
 # separate out question and solution and only train on solution
-patterns = [r"``` and should only print the final answer.",\
-            r"print the final result.\nApproach:",\
-            r"print the final output, as an integer not other python object such as list or tuple."]
-
-def search_patterns(text, patterns):
-    for pattern in patterns:
-        # Compile the pattern
-        regex = re.compile(pattern)
-        # Find all matches of the pattern in the text
-        matches = list(regex.finditer(text))
-        # If there is one match, get the end position
-        if matches:
-            return matches[0].end()
+def search_patterns(text):
+    pattern = r"\n\nAssistant:"
+    matches = list(re.finditer(pattern, text))
+    # If there is one match, get the end position
+    if matches:
+        return matches[0].end()
+    raise Exception("no match")
     
 tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
+import re
+clean_text = lambda x:re.sub(r"(<math>|<\/math>|<cmath>|<\/cmath>|\\begin\{align\*\}|\\end\{align\*\})", "", x)
 
-# {1}
-import pickle
+# {0,1}
 with open(f"../llmOutputs/PRM/completed_paths_y_code{version}.pickle", "rb") as f:
     completed_paths_y = pickle.load(f)
-
-texts = []
+data = []
 for y,score,text,code,prob_i,exit_i in completed_paths_y:
-    if y == 1:
-        texts.append(text.replace("<｜begin▁of▁sentence｜>User: ",""))
+    data.append([clean_text(text),y])
+texts,ys = zip(*data)
+
+ys = np.array(ys)
+ys = (ys-ys.mean())/ys.std()
+ys[ys<0] *= neg_weight
 
 input_ids = []
 lengths = []
 for text in texts:
-    idx = search_patterns(text,patterns)
+    idx = search_patterns(text)
     question = tokenizer.encode(text[:idx],add_special_tokens=True)
     answer = tokenizer.encode(text[idx:],add_special_tokens=False)
     lengths.append(len(question))
     input_ids.append(question+answer)
 
-# Pi > 0
+# Pi
 with open(f"../llmOutputs/PRM/data_pi1_code{version}.pickle", "rb") as f:
     data_pi = pickle.load(f)
+texts2,ys2,lengths_raw = zip(*data_pi)
+ys2 = np.array(ys2)
+ys2 = ys2/ys2.std() * len(texts) / len(texts2)
 
-for text,y,idx in data_pi:
-    if y > 0:
-        question = tokenizer.encode(text[:idx].replace("<｜begin▁of▁sentence｜>User: ",""),add_special_tokens=True)
-        answer = tokenizer.encode(text[idx:],add_special_tokens=False)
-        lengths.append(len(question))
-        input_ids.append(question+answer)
+# combined
+ys = ys.tolist() + ys2.tolist()
+for text,idx in zip(texts2,lengths_raw):
+    question = tokenizer.encode(clean_text(text[:idx]),add_special_tokens=True)
+    answer = tokenizer.encode(clean_text(text[idx:]),add_special_tokens=False)
+    lengths.append(len(question))
+    input_ids.append(question+answer)
 
-l1 = len(texts)
-l2 = len(input_ids) - l1
-ys = [1] * l1 + [l1/l2] * l2
+# SFT - Math
+def gen_prompt_codeIn1(problem):
+    return f"""{problem}\n
+Determine a sympy-based approach for solving the problem. When defining symbol, incorporate all constraints mentioned in the problem statement, e.g. real, integer, even, odd, positive, prime. If a variable represents a positive integer, Symbol('n', integer=True, positive=True). Your final answer should be integer, not expression, list, tuple or dictionary!
+Write the entire script covering all the steps (use comments and document it well) and print the final result.
+"""
+
+def gen_prompt_codeIn2(problem):
+    return f"""{problem}\n
+You are an expert at solving math problem. Analyze this problem and think step by step to develop a python solution. Your solution should include reasoning steps in Python comments, explaining your thought process and the mathematical principles you applied. print the final output, as an integer not other python object such as list or tuple."""
+
+def gen_prompt3(problem):
+    return problem+'''\n
+Carefully read and understand the problem and use all information in problem statement. No Python code. Show your work step-by-step, explain your reasoning, calculations, mathematical concepts and formulas in detail.
+Write your final answer as a single integer in the last line of your response, enclosed within \\boxed{}.
+'''
+
+def add_prompt(problem):
+    if np.random.rand()<0.5:
+        return gen_prompt_codeIn1(problem)
+    else:
+        return gen_prompt_codeIn2(problem)
+    
+sft = pd.read_csv("../Data/MATH/math.csv")
+# sft = sft.loc[sft.boxed_number == sft.parsed]
+sft = sft.loc[(sft.boxed_number == sft.parsed) & (sft.level == 'Level 5')]
+sft['code_wPrompt'] = sft.problem.apply(add_prompt)
+for q,a in zip(sft.code_wPrompt.tolist(),sft.code_solution.tolist()):
+    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+    lengths.append(len(question))
+    input_ids.append(question+answer)
+ys = ys + [SFT_weight] * sft.shape[0]
+
+sft['pure_wPrompt'] = sft.problem.apply(gen_prompt3)
+for q,a in zip(sft.pure_wPrompt.tolist(),sft.solution.tolist()):
+    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+    lengths.append(len(question))
+    input_ids.append(question+answer)
+ys = ys + [SFT_weight] * sft.shape[0]
+
+# SFT - AIME (prompt included)
+with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
+    outs = pickle.load(f)
+with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
+    outs2 = pickle.load(f)
+for q,a in outs:
+    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+    lengths.append(len(question))
+    input_ids.append(question+answer)
+ys = ys + [SFT_weight] * len(outs)
+
+for q,a in outs2:
+    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+    lengths.append(len(question))
+    input_ids.append(question+answer)
+ys = ys + [SFT_weight] * len(outs2)
 
 def from_gen(texts,ys,lengths):
     data = list(zip(texts,ys,lengths))
@@ -75,6 +136,7 @@ def from_gen(texts,ys,lengths):
     for text,y,l in data:
         text = torch.tensor(text[:MAX_LEN],device='cuda')[None]
         yield text,y,l
+
 
 
 #### Model
