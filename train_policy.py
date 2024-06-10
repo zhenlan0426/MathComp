@@ -71,19 +71,19 @@ for text,idx in zip(texts2,lengths_raw):
 
 # SFT - Math
 def gen_prompt_codeIn1(problem):
-    return f"""{problem}\n
+    return f"""User: {problem}\n
 Determine a sympy-based approach for solving the problem. When defining symbol, incorporate all constraints mentioned in the problem statement, e.g. real, integer, even, odd, positive, prime. If a variable represents a positive integer, Symbol('n', integer=True, positive=True). Your final answer should be integer, not expression, list, tuple or dictionary!
-Write the entire script covering all the steps (use comments and document it well) and print the final result.
+Write the entire script covering all the steps (use comments and document it well) and print the final result.\n\nAssistant:
 """
 
 def gen_prompt_codeIn2(problem):
-    return f"""{problem}\n
-You are an expert at solving math problem. Analyze this problem and think step by step to develop a python solution. Your solution should include reasoning steps in Python comments, explaining your thought process and the mathematical principles you applied. print the final output, as an integer not other python object such as list or tuple."""
+    return f"""User: {problem}\n
+You are an expert at solving math problem. Analyze this problem and think step by step to develop a python solution. Your solution should include reasoning steps in Python comments, explaining your thought process and the mathematical principles you applied. print the final output, as an integer not other python object such as list or tuple.\n\nAssistant:"""
 
 def gen_prompt3(problem):
-    return problem+'''\n
+    return "User: "+problem+'''\n
 Carefully read and understand the problem and use all information in problem statement. No Python code. Show your work step-by-step, explain your reasoning, calculations, mathematical concepts and formulas in detail.
-Write your final answer as a single integer in the last line of your response, enclosed within \\boxed{}.
+Write your final answer as a single integer in the last line of your response, enclosed within \\boxed{}.\n\nAssistant:
 '''
 
 def add_prompt(problem):
@@ -111,20 +111,20 @@ for q,a in zip(sft.pure_wPrompt.tolist(),sft.solution.tolist()):
     input_ids.append(question+answer)
 ys = ys + [SFT_weight] * sft.shape[0]
 
-# SFT - AIME (prompt included)
+# SFT - AIME (prompt included). [9:] remove "Problem:"
 with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
     outs = pickle.load(f)
 with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
     outs2 = pickle.load(f)
 for q,a in outs:
-    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+    question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
     answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
     lengths.append(len(question))
     input_ids.append(question+answer)
 ys = ys + [SFT_weight] * len(outs)
 
 for q,a in outs2:
-    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+    question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
     answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
     lengths.append(len(question))
     input_ids.append(question+answer)
