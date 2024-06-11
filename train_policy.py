@@ -11,9 +11,7 @@ import os
 import sys
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 MAX_LEN = 1200
-neg_weight = 0.5
-SFT_weight = 1
-min_loss = 0.02
+clip_ratio = 0.07
 
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01"
@@ -40,10 +38,8 @@ data = []
 for y,score,text,code,prob_i,exit_i in completed_paths_y:
     data.append([clean_text(text),y])
 texts,ys = zip(*data)
-
 ys = np.array(ys)
 ys = (ys-ys.mean())/ys.std()
-ys[ys<0] *= neg_weight
 
 input_ids = []
 lengths = []
@@ -59,7 +55,7 @@ with open(f"../llmOutputs/PRM/data_pi1_code{version}.pickle", "rb") as f:
     data_pi = pickle.load(f)
 texts2,ys2,lengths_raw = zip(*data_pi)
 ys2 = np.array(ys2)
-ys2 = ys2/ys2.std() * len(texts) / len(texts2)
+ys2 = ys2/ys2.std()
 
 # combined
 ys = ys.tolist() + ys2.tolist()
@@ -69,75 +65,19 @@ for text,idx in zip(texts2,lengths_raw):
     lengths.append(len(question))
     input_ids.append(question+answer)
 
-# SFT - Math
-def gen_prompt_codeIn1(problem):
-    return f"""User: {problem}\n
-Determine a sympy-based approach for solving the problem. When defining symbol, incorporate all constraints mentioned in the problem statement, e.g. real, integer, even, odd, positive, prime. If a variable represents a positive integer, Symbol('n', integer=True, positive=True). Your final answer should be integer, not expression, list, tuple or dictionary!
-Write the entire script covering all the steps (use comments and document it well) and print the final result.\n\nAssistant:
-"""
+data = list(zip(input_ids,ys,lengths))
+random.shuffle(data)
+input_ids,ys,lengths = list(zip(*data))
 
-def gen_prompt_codeIn2(problem):
-    return f"""User: {problem}\n
-You are an expert at solving math problem. Analyze this problem and think step by step to develop a python solution. Your solution should include reasoning steps in Python comments, explaining your thought process and the mathematical principles you applied. print the final output, as an integer not other python object such as list or tuple.\n\nAssistant:"""
-
-def gen_prompt3(problem):
-    return "User: "+problem+'''\n
-Carefully read and understand the problem and use all information in problem statement. No Python code. Show your work step-by-step, explain your reasoning, calculations, mathematical concepts and formulas in detail.
-Write your final answer as a single integer in the last line of your response, enclosed within \\boxed{}.\n\nAssistant:
-'''
-
-def add_prompt(problem):
-    if np.random.rand()<0.5:
-        return gen_prompt_codeIn1(problem)
-    else:
-        return gen_prompt_codeIn2(problem)
-    
-sft = pd.read_csv("../Data/MATH/math.csv")
-# sft = sft.loc[sft.boxed_number == sft.parsed]
-sft = sft.loc[(sft.boxed_number == sft.parsed) & (sft.level == 'Level 5')]
-sft['code_wPrompt'] = sft.problem.apply(add_prompt)
-for q,a in zip(sft.code_wPrompt.tolist(),sft.code_solution.tolist()):
-    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
-    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
-    lengths.append(len(question))
-    input_ids.append(question+answer)
-ys = ys + [SFT_weight] * sft.shape[0]
-
-sft['pure_wPrompt'] = sft.problem.apply(gen_prompt3)
-for q,a in zip(sft.pure_wPrompt.tolist(),sft.solution.tolist()):
-    question = tokenizer.encode(clean_text(q),add_special_tokens=True)
-    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
-    lengths.append(len(question))
-    input_ids.append(question+answer)
-ys = ys + [SFT_weight] * sft.shape[0]
-
-# SFT - AIME (prompt included). [9:] remove "Problem:"
-with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
-    outs = pickle.load(f)
-with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
-    outs2 = pickle.load(f)
-for q,a in outs:
-    question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
-    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
-    lengths.append(len(question))
-    input_ids.append(question+answer)
-ys = ys + [SFT_weight] * len(outs)
-
-for q,a in outs2:
-    question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
-    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
-    lengths.append(len(question))
-    input_ids.append(question+answer)
-ys = ys + [SFT_weight] * len(outs2)
-
-def from_gen(texts,ys,lengths):
-    data = list(zip(texts,ys,lengths))
-    random.shuffle(data)
-    for text,y,l in data:
-        text = torch.tensor(text[:MAX_LEN],device='cuda')[None]
-        yield text,y,l
-
-
+def from_gen(*data):
+    for da in zip(*data,strict=True):
+        if len(da) == 4:
+            text = torch.tensor(da[0][:MAX_LEN],device='cuda')[None]
+            logp_old = torch.tensor(da[1],device='cuda')
+            yield text,logp_old,*da[2:]
+        else:
+            text = torch.tensor(da[0][:MAX_LEN],device='cuda')[None]
+            yield text,*da[1:]
 
 #### Model
 epochs = 1
@@ -187,23 +127,55 @@ model.print_trainable_parameters()
 trainable_params = [param for param in model.parameters() if param.requires_grad]
 optimizer = torch.optim.AdamW(trainable_params,lr = lr)
 
+import torch.nn.functional as F
+def logP_from_logits(logits, text):
+    """
+    Extracts log probabilities of the selected classes from logits.
+
+    Args:
+        logits (torch.Tensor): Logits of shape (l, C).
+        text (torch.Tensor): Text of shape (l,), where each element is a class index.
+
+    Returns:
+        torch.Tensor: Log probabilities of shape (l,).
+    """
+    log_probs = F.log_softmax(logits, dim=-1)  # Normalize to log probabilities
+    log_probs_of_text = log_probs.gather(1, text.unsqueeze(1)).squeeze(1) # Gather log probabilities using fancy indexing
+    return log_probs_of_text
+# get old logP
+logP_list = []
+for text,y,l in from_gen(input_ids,ys,lengths):
+    with torch.no_grad():
+        logits = model(text).logits[0,l:-1]
+        logP = logP_from_logits(logits, text[0,l+1:]).cpu().numpy()
+    assert (text.shape[1] - l - 1) == logP.shape[0]
+    logP_list.append(logP)
+
 def empty_cache():
     gc.collect()
     torch.cuda.empty_cache()
 
+def loss_fn(logp,logp_old,adv,clip_ratio):
+    ratio = torch.exp(logp - logp_old)
+    clip_adv = torch.clamp(ratio, 1-clip_ratio, 1+clip_ratio) * adv
+    loss_pi = -(torch.min(ratio * adv, clip_adv)).mean()
+    # approx_kl = (logp_old - logp).mean().item()
+    return loss_pi
+
 import math
 import gc
-loss_fn = torch.nn.CrossEntropyLoss()
+
 train_loss = 0
 count_loss = 0
 
 for epoch in range(epochs):
-    for i,(text,y,l) in enumerate(from_gen(input_ids,ys,lengths)):
+    for i,(text,logP_old,adv,l) in enumerate(from_gen(input_ids,logP_list,ys,lengths)):
         if i > 0:
-            del outs,loss
+            del logits,logP,loss
             empty_cache()
-        outs = model(text).logits # 1,l,C
-        loss = loss_fn(outs[0,l:-1],text[0,l+1:]) * y # (l,C), (l,)
+        logits = model(text).logits[0,l:-1] # 1,l,C
+        logP = logP_from_logits(logits, text[0,l+1:])
+        loss = loss_fn(logP,logP_old,adv,clip_ratio)
         if math.isinf(loss.item()) or math.isnan(loss.item()): continue
         loss.backward()
         train_loss += loss.item()
@@ -226,7 +198,7 @@ peft_model_id = f"../Model/PRM_LORA{next_version}_code_policy_01"
 # !mkdir peft_model_id
 model.save_pretrained(peft_model_id)
 
-del model,texts,outs
+del logits,logP,loss
 gc.collect()
 torch.cuda.empty_cache()
 from transformers import AutoModelForCausalLM
