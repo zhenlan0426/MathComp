@@ -106,7 +106,7 @@ def eval_prm(candidates):
     all_log_probs = []
     for i in range(len(candidates)):
         text = clean_text(candidates[i],True)
-        input_ids = prm_tokenizer.encode(text, return_tensors="pt").to("cuda:1")
+        input_ids = prm_tokenizer.encode(text, return_tensors="pt").to("cuda")
         with torch.no_grad():
             hidden_states = base_model(input_ids)[0][:,-1] # 1,l,d -> 1,d
             logits = prm_model.score(hidden_states)[0]

@@ -13,7 +13,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 MAX_LEN = 1200
 neg_weight = 0.5
 SFT_weight = 1
-min_loss = -0.01
+min_loss = 0.02
 
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01"
