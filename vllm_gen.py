@@ -11,9 +11,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import subprocess
 import sys
 
-n = 1 # beams
-n_sol = 3
-samples = 16
+n = 5 # beams
+n_sol = 7
+samples = 5
 max_depth = 16
 max_pct = 0.8
 temperature = 0.5
@@ -43,17 +43,16 @@ sampling_params = SamplingParams(temperature=1,
 
 
 def gen_prompt_codeIn1(problem):
-    return f"""Problem: {problem}\n
+    return f"""{problem}\n
 Determine a sympy-based approach for solving the problem. When defining symbol, incorporate all constraints mentioned in the problem statement, e.g. real, integer, even, odd, positive, prime. If a variable represents a positive integer, Symbol('n', integer=True, positive=True). Your final answer should be integer, not expression, list, tuple or dictionary!
-Write the entire script covering all the steps (use comments and document it well) and print the final result.
-Approach:"""
+Write the entire script covering all the steps (use comments and document it well) and print the final result."""
 
 def gen_prompt_codeIn2(problem):
-    return f"""Problem: {problem}\n
+    return f"""{problem}\n
 You are an expert at solving math problem. Analyze this problem and think step by step to develop a python solution. Your solution should include reasoning steps in Python comments, explaining your thought process and the mathematical principles you applied. print the final output, as an integer not other python object such as list or tuple."""
 
 def gen_prompt3(problem):
-    return '''Problem: \n'''+problem+'''\n
+    return problem+'''\n
 Carefully read and understand the problem and use all information in problem statement. No Python code. Show your work step-by-step, explain your reasoning, calculations, mathematical concepts and formulas in detail.
 Write your final answer as a single integer in the last line of your response, enclosed within \\boxed{}.
 '''
@@ -471,9 +470,10 @@ with open(f"../llmOutputs/PRM/completed_paths_y_code{version}.pickle", "wb") as 
 # performance report
 import csv
 data = pd.DataFrame(completed_paths_y,columns=['isCorrect','score','node','code','prob_i','exit_i'])
+data = data.sort_values(by=['prob_i', 'score'], ascending=False)
 from sklearn.metrics import roc_auc_score
 auc = roc_auc_score(data.iloc[:,0].values,data.iloc[:,1].values)
-mean_acc = data.iloc[:,0].mean() * 975
+mean_acc = data.groupby('prob_i')['isCorrect'].first().mean() * 985
 max_acc = data.groupby(['prob_i']).isCorrect.max().sum()
 value_counts = json.dumps(data.exit_i.value_counts().to_dict())
 log_data = pd.read_csv('training_log.csv')
