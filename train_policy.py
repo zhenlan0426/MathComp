@@ -12,6 +12,9 @@ import sys
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 MAX_LEN = 1200
 clip_ratio = 0.07
+SFT_Math_sample = 0.1
+AIMI_sample = 0.2
+# prev_sample = 0.2
 
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01"
@@ -35,20 +38,25 @@ clean_text = lambda x:re.sub(r"(<math>|<\/math>|<cmath>|<\/cmath>|\\begin\{align
 with open(f"../llmOutputs/PRM/completed_paths_y_code{version}.pickle", "rb") as f:
     completed_paths_y = pickle.load(f)
 data = []
+count_1 = 0
 for y,score,text,code,prob_i,exit_i in completed_paths_y:
     data.append([clean_text(text),y])
+    if y == 1: count_1 += 1
 texts,ys = zip(*data)
 ys = np.array(ys)
 ys = (ys-ys.mean())/ys.std()
-
 input_ids = []
 lengths = []
-for text in texts:
+y_final = []
+
+for text,y in zip(texts,ys):
     idx = search_patterns(text)
     question = tokenizer.encode(text[:idx],add_special_tokens=True)
     answer = tokenizer.encode(text[idx:],add_special_tokens=False)
+    if len(question) > 1100: continue # at least 1200 - 1100 to train on
     lengths.append(len(question))
     input_ids.append(question+answer)
+    y_final.append(y)
 
 # Pi
 with open(f"../llmOutputs/PRM/data_pi1_code{version}.pickle", "rb") as f:
@@ -57,17 +65,121 @@ texts2,ys2,lengths_raw = zip(*data_pi)
 ys2 = np.array(ys2)
 ys2 = ys2/ys2.std()
 
-# combined
-ys = ys.tolist() + ys2.tolist()
-for text,idx in zip(texts2,lengths_raw):
+for text,idx,y in zip(texts2,lengths_raw,ys2):
     question = tokenizer.encode(clean_text(text[:idx]),add_special_tokens=True)
     answer = tokenizer.encode(clean_text(text[idx:]),add_special_tokens=False)
+    if len(question) > 1100: continue # at least 1200 - 1100 to train on
     lengths.append(len(question))
     input_ids.append(question+answer)
+    y_final.append(y)
 
+# previous correct sol
+if int(version) > 1: # correct_paths does not exist for version 1
+    with open("correct_paths.json", 'r') as f:
+        data_pre = json.load(f)
+    for _,v in data_pre.items(): # (question #,[sol1,sol2,...])...
+        text = random.choice(v) # one sample sol per question
+        idx = search_patterns(text)
+        question = tokenizer.encode(clean_text(text[:idx]),add_special_tokens=True)
+        answer = tokenizer.encode(clean_text(text[idx:]),add_special_tokens=False)
+        if len(question) > 1100: continue # at least 1200 - 1100 to train on
+        lengths.append(len(question))
+        input_ids.append(question+answer)
+    ys = y_final + [1.0] * (len(lengths) - len(y_final))
+else:
+    ys = y_final
+
+# SFT - Math
+def gen_prompt_codeIn1(problem):
+    return f"""User: {problem}\n
+Determine a sympy-based approach for solving the problem. When defining symbol, incorporate all constraints mentioned in the problem statement, e.g. real, integer, even, odd, positive, prime. If a variable represents a positive integer, Symbol('n', integer=True, positive=True). Your final answer should be integer, not expression, list, tuple or dictionary!
+Write the entire script covering all the steps (use comments and document it well) and print the final result.\n\nAssistant:
+"""
+def gen_prompt_codeIn2(problem):
+    return f"""User: {problem}\n
+You are an expert at solving math problem. Analyze this problem and think step by step to develop a python solution. Your solution should include reasoning steps in Python comments, explaining your thought process and the mathematical principles you applied. print the final output, as an integer not other python object such as list or tuple.\n\nAssistant:"""
+def gen_prompt3(problem):
+    return "User: "+problem+'''\n
+Carefully read and understand the problem and use all information in problem statement. No Python code. Show your work step-by-step, explain your reasoning, calculations, mathematical concepts and formulas in detail.
+Write your final answer as a single integer in the last line of your response, enclosed within \\boxed{}.\n\nAssistant:
+'''
+def add_prompt(problem):
+    if np.random.rand()<0.5:
+        return gen_prompt_codeIn1(problem)
+    else:
+        return gen_prompt_codeIn2(problem)
+    
+sft = pd.read_csv("../Data/MATH/math.csv")
+# sft = sft.loc[sft.boxed_number == sft.parsed]
+sft = sft.loc[(sft.boxed_number == sft.parsed) & (sft.level == 'Level 5')]
+sft['code_wPrompt'] = sft.problem.apply(add_prompt)
+for q,a in zip(sft.code_wPrompt.tolist(),sft.code_solution.tolist()):
+    if np.random.rand() < SFT_Math_sample:
+        question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+        answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+        if len(question) > 1100: continue # at least 1200 - 1100 to train on
+        lengths.append(len(question))
+        input_ids.append(question+answer)
+ys = ys + [1.0] * (len(lengths) - len(ys))
+
+sft['pure_wPrompt'] = sft.problem.apply(gen_prompt3)
+for q,a in zip(sft.pure_wPrompt.tolist(),sft.solution.tolist()):
+    if np.random.rand() < SFT_Math_sample:
+        question = tokenizer.encode(clean_text(q),add_special_tokens=True)
+        answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+        if len(question) > 1100: continue # at least 1200 - 1100 to train on
+        lengths.append(len(question))
+        input_ids.append(question+answer)
+ys = ys + [1.0] * (len(lengths) - len(ys))
+
+
+# SFT - AIME (prompt included). [9:] remove "Problem:"
+with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
+    outs = pickle.load(f)
+with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
+    outs2 = pickle.load(f)
+for q,a in outs:
+    question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
+    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+    if len(question) > 1100: continue # at least 1200 - 1100 to train on
+    lengths.append(len(question))
+    input_ids.append(question+answer)
+ys = ys + [1.0] * (len(lengths) - len(ys))sample
+        question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
+        answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+        if len(question) > 1100: continue # at least 1200 - 1100 to train on
+        lengths.append(len(question))
+        input_ids.append(question+answer)
+ys = ys + [1.0] * (len(lengths) - len(ys))
+
+assert len(ys) == len(input_ids) == len(lengths)
 data = list(zip(input_ids,ys,lengths))
 random.shuffle(data)
 input_ids,ys,lengths = list(zip(*data))
+
+# save completed_paths_y_code in correct_paths.json
+data = pd.DataFrame(completed_paths_y,columns=['isCorrect','score','node','code','prob_i','exit_i'])
+data['prob_i'] = data['prob_i'].astype(str)
+data_dic = data.loc[data.isCorrect==1].groupby('prob_i')['node'].apply(list).to_dict()
+from collections import defaultdict
+def merge_node_dicts(d1, d2):
+    merged = defaultdict(list)
+    for key, value in d1.items():
+        merged[key].extend(value)  # Start with d1's values
+    for key, value in d2.items():
+        merged[key].extend(value)  # Extend with d2's values
+    return dict(merged)  # Convert back to regular dictionary
+import json
+def merge_and_save(filename, new_dict):
+    try:
+        with open(filename, 'r') as f:
+            existing_data = json.load(f)
+    except FileNotFoundError:
+        existing_data = {}
+    existing_data = merge_node_dicts(existing_data,new_dict)
+    with open(filename, 'w') as f:
+        json.dump(existing_data, f)
+merge_and_save("correct_paths.json",data_dic)
 
 def from_gen(*data):
     for da in zip(*data,strict=True):

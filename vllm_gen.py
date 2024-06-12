@@ -17,6 +17,8 @@ samples = 5
 max_depth = 16
 max_pct = 0.8
 temperature = 0.5
+min_len = 77
+
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01" #_merged_code_policy_01SFT
 
@@ -287,7 +289,8 @@ def get_next_node(prm_inputs,prm_scores,completed_paths):
     for node,score in combined:
         finish = IsFinished(node)
         if finish: # finished
-            completed_paths.append((score,node))
+            if len(node.split("Assistant:")[1]) > min_len:
+                completed_paths.append((score,node))
         else: # not inished
             next_level_nodes.append(node)
             next_level_scores.append(score)
@@ -387,6 +390,13 @@ def repl(match):
 from multiprocessing import Pool
 from itertools import chain
 
+def extract_code(text):
+  text = text.split("Assistant:")[1]
+  match = re.search(r"print\(.+?\)", text)  # Non-greedy match within parentheses
+  if match:
+    return text[:match.end()].strip()
+  raise Exception("no match")
+
 def process_paths(args):
     paths, y, idx = args
     paths = [p for p in paths if p]
@@ -404,10 +414,15 @@ def process_paths(args):
                 input += ")"
             splits = input.split('```')
             if len(splits) < 2:
-                out.append([0,path[0],path[1],'no code',idx,1])
-                continue
-            code = "from sympy import *\n" + input.split('```')[1][7:]
-            node = '```'.join(splits[:4]) # only return up to the first python code. later code/reason not relevant
+                try:
+                    code = "from sympy import *\n" + extract_code(input) # not delimited by ```python
+                    node = input
+                except:
+                    out.append([0,path[0],path[1],'no code',idx,1])
+                    continue
+            else:
+                code = "from sympy import *\n" + input.split('```')[1][7:] 
+                node = '```'.join(splits[:4]) # only return up to the first python code. later code/reason not relevant
             # execute code
             with open(f'temp/code_{idx}_{j}.py', 'w') as fout:
                 fout.write(code)
