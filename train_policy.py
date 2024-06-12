@@ -139,17 +139,21 @@ with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
 with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
     outs2 = pickle.load(f)
 for q,a in outs:
+    if np.random.rand() > AIMI_sample: continue
     question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
     answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
     if len(question) > 1100: continue # at least 1200 - 1100 to train on
     lengths.append(len(question))
     input_ids.append(question+answer)
-ys = ys + [1.0] * (len(lengths) - len(ys))sample
-        question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
-        answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
-        if len(question) > 1100: continue # at least 1200 - 1100 to train on
-        lengths.append(len(question))
-        input_ids.append(question+answer)
+ys = ys + [1.0] * (len(lengths) - len(ys))
+
+for q,a in outs2:
+    if np.random.rand() > AIMI_sample: continue
+    question = tokenizer.encode("User: "+clean_text(q[9:])+"\n\nAssistant:",add_special_tokens=True)
+    answer = tokenizer.encode(clean_text(a),add_special_tokens=False)
+    if len(question) > 1100: continue # at least 1200 - 1100 to train on
+    lengths.append(len(question))
+    input_ids.append(question+answer)
 ys = ys + [1.0] * (len(lengths) - len(ys))
 
 assert len(ys) == len(input_ids) == len(lengths)
