@@ -41,7 +41,9 @@ sampling_params = SamplingParams(temperature=1,
                                  max_tokens=256,
                                 #  min_tokens=32,
                                  stop=stop_words,
-                                 include_stop_str_in_output=True)
+                                 include_stop_str_in_output=True,
+                                 logprobs = 0,
+                                 prompt_logprobs =0,)
 
 
 def gen_prompt_codeIn1(problem):
@@ -197,20 +199,26 @@ def unflatten(flat_list, lengths):
         index += length
     return nested_list
 
+dict2val = lambda d:next(iter(d.values())).logprob
+out2logp = lambda out:[dict2val(d) for d in out.prompt_logprobs[1:]] + [dict2val(d) for d in out.outputs[0].logprobs] # start from second token, skip [BOS]
+
 def filter_input(batch_response,current_level_node):
     # one question filter
     prm_inputs = []
     parents = []
+    logps = []
     for candidate,parent in zip(batch_response,current_level_node):
         if candidate.outputs[0].text not in parent:
             prm_input = parent + candidate.outputs[0].text
             prm_inputs.append(prm_input)
             parents.append(parent)
+            logps.append(out2logp(candidate))
     # Get the indices of unique elements in prm_inputs
     unique_indices = [i for i, x in enumerate(prm_inputs) if prm_inputs.index(x) == i]
     prm_inputs = [prm_inputs[i] for i in unique_indices]
     parents = [parents[i] for i in unique_indices]
-    return prm_inputs,parents,len(prm_inputs)
+    logps = [logps[i] for i in unique_indices]
+    return prm_inputs,parents,len(prm_inputs),logps
 
 def filter_inputs(batch_responses,current_level_nodes,lengths):
     # all question filter
@@ -219,10 +227,11 @@ def filter_inputs(batch_responses,current_level_nodes,lengths):
     prm_inputs = []
     lengths = []
     parent_list = []
+    logp_list = []
     uncompleted = [path for path in completed_paths if len(path)<n_sol]
     assert len(batch_responses) == len(uncompleted)
     for batch_response,current_level_node,path in zip(batch_responses,current_level_nodes,uncompleted):
-        prm_input,parents,length = filter_input(batch_response,current_level_node)
+        prm_input,parents,length,logps = filter_input(batch_response,current_level_node)
         if length == 0:# all bad
             while len(path)<n_sol:
                 # make complete for this question as there will be no continued effort
@@ -230,8 +239,9 @@ def filter_inputs(batch_responses,current_level_nodes,lengths):
         else:
             prm_inputs.extend(prm_input)
             parent_list.extend(parents)
+            logp_list.extend(logps)
             lengths.append(length)
-    return prm_inputs,parent_list,lengths
+    return prm_inputs,parent_list,lengths,logp_list
 
 def HasAnswer(text):
     patterns = [
@@ -281,16 +291,16 @@ def sample_k(items, probabilities, k):
     )
     return sampled_items
 
-def get_next_node(prm_inputs,prm_scores,completed_paths):
+def get_next_node(prm_inputs,prm_scores,completed_paths,logps):
     # need to update completed_paths in-place
     next_level_nodes = []
     next_level_scores = []
-    combined = list(zip(prm_inputs,prm_scores))    
-    for node,score in combined:
+    combined = list(zip(prm_inputs,prm_scores,logps))    
+    for node,score,logp in combined:
         finish = IsFinished(node)
         if finish: # finished
             if len(node.split("Assistant:")[1]) > min_len:
-                completed_paths.append((score,node))
+                completed_paths.append((score,node,logp))
         else: # not inished
             next_level_nodes.append(node)
             next_level_scores.append(score)
@@ -300,17 +310,18 @@ def get_next_node(prm_inputs,prm_scores,completed_paths):
     return next_level_nodes
 
 
-def get_next_nodes(prm_inputs,prm_scores,lengths):
+def get_next_nodes(prm_inputs,prm_scores,lengths,logp_list):
     # for completed_paths, next_level_nodes would be removed
     # returned value should be flattened
-    prm_inputs,prm_scores = unflatten(prm_inputs,lengths),unflatten(prm_scores,lengths)
+    prm_inputs,prm_scores,logps = unflatten(prm_inputs,lengths),unflatten(prm_scores,lengths),unflatten(logp_list,lengths)
     uncompleted = [path for path in completed_paths if len(path)<n_sol]
     assert len(uncompleted) == len(lengths)
     assert len(prm_inputs) == len(lengths)
     assert len(prm_scores) == len(lengths)
+    assert len(logps) == len(lengths)
     next_level_nodes,lengths = [],[]
-    for prm_input,prm_score,completed_path in zip(prm_inputs,prm_scores,uncompleted):
-        next_node = get_next_node(prm_input,prm_score,completed_path)
+    for prm_input,prm_score,completed_path,logp in zip(prm_inputs,prm_scores,uncompleted,logps):
+        next_node = get_next_node(prm_input,prm_score,completed_path,logp)
         if len(completed_path) < n_sol:
             next_level_nodes.extend(next_node)
             lengths.append(len(next_node))
@@ -344,7 +355,7 @@ while (current_level < max_depth) and (current_level_nodes):
     current_level_nodes = repeat_elements(current_level_nodes,samples)
     lengths = [l*samples for l in lengths]
     batch_responses = llm.generate(current_level_nodes, sampling_params)
-    prm_inputs,parent_list,lengths = filter_inputs(batch_responses,current_level_nodes,lengths)
+    prm_inputs,parent_list,lengths,logp_list = filter_inputs(batch_responses,current_level_nodes,lengths)
     
     # release VRAM to prm_model
     del llm
@@ -357,13 +368,13 @@ while (current_level < max_depth) and (current_level_nodes):
     averages,averages_dup = group_and_average(parent_list,prm_scores)
     data_V.extend(list(averages.items()))
     advantages = [q-v for q,v in zip(prm_scores,averages_dup)]
-    data_pi.extend(list(zip(prm_inputs,advantages,[len(p) for p in parent_list]))) # pi(a|s) only train on action part
+    data_pi.extend(list(zip(prm_inputs,advantages,[len(p) for p in parent_list],logp_list))) # pi(a|s) only train on action part
     
     # release VRAM to llm
     prm_model.to('cpu')
     llm,tokenizer = create_llm()
     
-    current_level_nodes,lengths = get_next_nodes(prm_inputs,advantages,lengths)
+    current_level_nodes,lengths = get_next_nodes(prm_inputs,advantages,lengths,logp_list)
     current_level += 1
 
 #### exec code
@@ -391,24 +402,24 @@ from multiprocessing import Pool
 from itertools import chain
 
 def extract_code(text):
-  text = text.split("Assistant:")[1]
-  match = re.search(r"print\(.+?\)", text)  # Non-greedy match within parentheses
-  if match:
-    return text[:match.end()].strip()
-  raise Exception("no match")
+    text = text.split("Assistant:")[1]
+    match = re.search(r"print\(.+?\)", text)  # Non-greedy match within parentheses
+    if match:
+        return text[:match.end()].strip()
+    raise Exception("no match")
 
 def process_paths(args):
     paths, y, idx = args
     paths = [p for p in paths if p]
-    out = [] # (isCorrect,score,node,code,prob_i,exit_i)
-    for j,path in enumerate(paths):# path (score,node)
+    out = [] # (isCorrect,score,node,code,prob_i,exit_i,logp)
+    for j,path in enumerate(paths):# path (score,node,logp)
         input = path[1]
         if "No Python code." in input:
             yhat = extract_number(input)
             if yhat == "error":
-                out.append([0,path[0],path[1],'no code',idx,7])
+                out.append([0,path[0],path[1],'no code',idx,7,path[2]])
             else:
-                out.append([int(y==yhat),path[0],path[1],'no code',idx,8])
+                out.append([int(y==yhat),path[0],path[1],'no code',idx,8,path[2]])
         else: # code
             if input[-12:]=="print(result": # stop token was not included. print(result) might miss a ")"
                 input += ")"
@@ -418,7 +429,7 @@ def process_paths(args):
                     code = "from sympy import *\n" + extract_code(input) # not delimited by ```python
                     node = input
                 except:
-                    out.append([0,path[0],path[1],'no code',idx,1])
+                    out.append([0,path[0],path[1],'no code',idx,1,path[2]])
                     continue
             else:
                 code = "from sympy import *\n" + input.split('```')[1][7:] 
@@ -430,12 +441,12 @@ def process_paths(args):
             try:
                 process = subprocess.run([sys.executable, f'temp/code_{idx}_{j}.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7.1)
             except subprocess.TimeoutExpired:
-                out.append([0,path[0],node,code,idx,2])
+                out.append([0,path[0],node,code,idx,2,path[2]])
                 with open(f'temp/2/code_{idx}_{j}.py', 'w') as fout:
                     fout.write(code)
                 continue
             if process.stderr:# code.py err
-                out.append([0,path[0],node,code,idx,3])
+                out.append([0,path[0],node,code,idx,3,path[2]])
                 code = code + '\n\n"""' + process.stderr.decode('utf-8') + '"""'
                 with open(f'temp/3/code_{idx}_{j}.py', 'w') as fout:
                     fout.write(code)           
@@ -445,18 +456,18 @@ def process_paths(args):
                 try:
                     answer = eval(stdout)
                     if is_integer(answer):
-                        out.append([int(int(answer)==y),path[0],node,code,idx,4])
+                        out.append([int(int(answer)==y),path[0],node,code,idx,4,path[2]])
                         with open(f'temp/4/code_{idx}_{j}.py', 'w') as fout:
                             fout.write(code)                     
                         continue
                     else:
-                        out.append([0,path[0],node,code,idx,5])
+                        out.append([0,path[0],node,code,idx,5,path[2]])
                         code = code + '\n\n"""' + stdout + '"""'
                         with open(f'temp/5/code_{idx}_{j}.py', 'w') as fout:
                             fout.write(code)          
                         continue
                 except:
-                    out.append([0,path[0],node,code,idx,6])
+                    out.append([0,path[0],node,code,idx,6,path[2]])
                     code = code + '\n\n"""' + stdout + '"""'
                     with open(f'temp/6/code_{idx}_{j}.py', 'w') as fout:
                         fout.write(code)
@@ -484,7 +495,7 @@ with open(f"../llmOutputs/PRM/completed_paths_y_code{version}.pickle", "wb") as 
     
 # performance report
 import csv
-data = pd.DataFrame(completed_paths_y,columns=['isCorrect','score','node','code','prob_i','exit_i'])
+data = pd.DataFrame([paths[:-1] for paths in completed_paths_y],columns=['isCorrect','score','node','code','prob_i','exit_i'])
 data = data.sort_values(by=['prob_i', 'score'], ascending=False)
 from sklearn.metrics import roc_auc_score
 auc = roc_auc_score(data.iloc[:,0].values,data.iloc[:,1].values)
