@@ -9,6 +9,7 @@ import re
 from transformers import AutoTokenizer
 import os
 import sys
+import json
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 MAX_LEN = 1200
 clip_ratio = 0.07
@@ -258,14 +259,6 @@ def logP_from_logits(logits, text):
     log_probs = F.log_softmax(logits, dim=-1)  # Normalize to log probabilities
     log_probs_of_text = log_probs.gather(1, text.unsqueeze(1)).squeeze(1) # Gather log probabilities using fancy indexing
     return log_probs_of_text
-# get old logP
-logP_list = []
-for text,y,l in from_gen(input_ids,ys,lengths):
-    with torch.no_grad():
-        logits = model(text).logits[0,l:-1]
-        logP = logP_from_logits(logits, text[0,l+1:]).cpu().numpy()
-    assert (text.shape[1] - l - 1) == logP.shape[0]
-    logP_list.append(logP)
 
 def empty_cache():
     gc.collect()
@@ -285,10 +278,16 @@ train_loss = 0
 count_loss = 0
 
 for epoch in range(epochs):
-    for i,(text,logP_old,adv,l) in enumerate(from_gen(input_ids,logP_list,ys,lengths)):
-        if i > 0:
-            del logits,logP,loss
-            empty_cache()
+    for i,(text,adv,l) in enumerate(from_gen(input_ids,ys,lengths)):
+
+        # base model logp
+        model.disable_adapter()
+        with torch.no_grad():
+            logits = model(text).logits[0,l:-1]
+            logP_old = logP_from_logits(logits, text[0,l+1:])
+            
+        # FT model logp
+        model.enable_adapter()
         logits = model(text).logits[0,l:-1] # 1,l,C
         logP = logP_from_logits(logits, text[0,l+1:])
         loss = loss_fn(logP,logP_old,adv,clip_ratio)
