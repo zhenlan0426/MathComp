@@ -17,7 +17,7 @@ SFT_Math_sample = 0.1
 AIMI_sample = 0.2
 # prev_sample = 0.2
 
-version = "5"
+version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01"
 next_version = str(int(version) + 1)
 
@@ -163,28 +163,29 @@ random.shuffle(data)
 input_ids,ys,lengths = list(zip(*data))
 
 # save completed_paths_y_code in correct_paths.json
-# data = pd.DataFrame(completed_paths_y,columns=['isCorrect','score','node','code','prob_i','exit_i'])
-# data['prob_i'] = data['prob_i'].astype(str)
-# data_dic = data.loc[data.isCorrect==1].groupby('prob_i')['node'].apply(list).to_dict()
-# from collections import defaultdict
-# def merge_node_dicts(d1, d2):
-#     merged = defaultdict(list)
-#     for key, value in d1.items():
-#         merged[key].extend(value)  # Start with d1's values
-#     for key, value in d2.items():
-#         merged[key].extend(value)  # Extend with d2's values
-#     return dict(merged)  # Convert back to regular dictionary
-# import json
-# def merge_and_save(filename, new_dict):
-#     try:
-#         with open(filename, 'r') as f:
-#             existing_data = json.load(f)
-#     except FileNotFoundError:
-#         existing_data = {}
-#     existing_data = merge_node_dicts(existing_data,new_dict)
-#     with open(filename, 'w') as f:
-#         json.dump(existing_data, f)
-# merge_and_save("correct_paths.json",data_dic)
+data = pd.DataFrame(completed_paths_y,columns=['isCorrect','score','node','code','prob_i','exit_i'])
+data['prob_i'] = data['prob_i'].astype(str)
+data_dic = data.loc[data.isCorrect==1].groupby('prob_i')['node'].apply(list).to_dict()
+from collections import defaultdict
+def merge_node_dicts(d1, d2):
+    merged = defaultdict(list)
+    for key, value in d1.items():
+        merged[key].extend(value)  # Start with d1's values
+    for key, value in d2.items():
+        merged[key].extend(value)  # Extend with d2's values
+    return dict(merged)  # Convert back to regular dictionary
+import json
+def merge_and_save(filename, new_dict):
+    try:
+        with open(filename, 'r') as f:
+            existing_data = json.load(f)
+    except FileNotFoundError:
+        existing_data = {}
+    existing_data = merge_node_dicts(existing_data,new_dict)
+    existing_data = {k:list(set(v)) for k,v in existing_data.items()}
+    with open(filename, 'w') as f:
+        json.dump(existing_data, f)
+merge_and_save("correct_paths.json",data_dic)
 
 def from_gen(*data):
     for da in zip(*data,strict=True):
