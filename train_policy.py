@@ -182,6 +182,7 @@ def merge_and_save(filename, new_dict):
     except FileNotFoundError:
         existing_data = {}
     existing_data = merge_node_dicts(existing_data,new_dict)
+    existing_data = {k:list(set(v)) for k,v in existing_data.items()}
     with open(filename, 'w') as f:
         json.dump(existing_data, f)
 merge_and_save("correct_paths.json",data_dic)
@@ -281,13 +282,13 @@ for epoch in range(epochs):
     for i,(text,adv,l) in enumerate(from_gen(input_ids,ys,lengths)):
 
         # base model logp
-        model.disable_adapter()
+        model.disable_adapter_layers()
         with torch.no_grad():
             logits = model(text).logits[0,l:-1]
             logP_old = logP_from_logits(logits, text[0,l+1:])
             
         # FT model logp
-        model.enable_adapter()
+        model.enable_adapter_layers()
         logits = model(text).logits[0,l:-1] # 1,l,C
         logP = logP_from_logits(logits, text[0,l+1:])
         loss = loss_fn(logP,logP_old,adv,clip_ratio)
