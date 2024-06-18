@@ -38,16 +38,16 @@ for y,score,text,code,prob_i,exit_i in completed_paths_y:
 
 # SFT data # TODO: remove this later? if loss is too low, e.g. <0.1, overfit or topic classification
 # AIME (prompt included)
-with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
-    outs = pickle.load(f)
-with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
-    outs2 = pickle.load(f)
-for q,s in outs:
-    if np.random.rand()<0.5:
-        data.append([clean_text(q+s,True),1])
-for q,s in outs2:
-    if np.random.rand()<0.25:
-        data.append([clean_text(q+s,True),1])
+# with open(f"../Data/ai-mathematical-olympiad-prize/10prob.pickle", "rb") as f:
+#     outs = pickle.load(f)
+# with open(f"../Data/AMC/aime_final.pickle", "rb") as f:
+#     outs2 = pickle.load(f)
+# for q,s in outs:
+#     if np.random.rand()<0.5:
+#         data.append([clean_text(q+s,True),1])
+# for q,s in outs2:
+#     if np.random.rand()<0.25:
+#         data.append([clean_text(q+s,True),1])
 import random
 random.shuffle(data)
 texts,ys = zip(*data)

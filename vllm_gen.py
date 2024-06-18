@@ -11,13 +11,14 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import subprocess
 import sys
 
-n = 5 # beams
-n_sol = 7
-samples = 5
-max_depth = 16
+n = 1 # beams
+n_sol = 5
+samples = 16
+max_depth = 12
 max_pct = 0.8
-temperature = 0.5
+temperature = 0.2
 min_len = 77
+quantile = 0.75
 
 version = sys.argv[1]
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01" #_merged_code_policy_01SFT
@@ -155,14 +156,14 @@ def group_and_sum(A, B):
 def group_and_average(A, B):
     from collections import defaultdict
     # Create a dictionary to store sums and counts for averaging
-    sum_dict = defaultdict(lambda: [0, 0])  # Each key maps to [sum, count]
+    sum_dict = defaultdict(list)  # Each key maps to [sum, count]
     # Pair elements from A and B and aggregate sums and counts
     for key, value in zip(A, B):
-        sum_dict[key][0] += value
-        sum_dict[key][1] += 1
+        sum_dict[key].append(value)
     # Calculate averages
-    averages = {key: sum_count[0] / sum_count[1] for key, sum_count in sum_dict.items()}
-    return averages,[averages[a] for a in A]
+    averages = {key: np.mean(value) for key, value in sum_dict.items()}
+    quantiles = {key: np.quantile(value,quantile) for key, value in sum_dict.items()}
+    return quantiles,[averages[a] for a in A]
 
 def max_dict(d):
     return max(d.items(), key=lambda x: x[1])[0]
@@ -363,7 +364,7 @@ while (current_level < max_depth) and (current_level_nodes):
     prm_model.to('cpu')
     llm,tokenizer = create_llm()
     
-    current_level_nodes,lengths = get_next_nodes(prm_inputs,advantages,lengths)
+    current_level_nodes,lengths = get_next_nodes(prm_inputs,prm_scores,lengths)
     current_level += 1
 
 #### exec code
