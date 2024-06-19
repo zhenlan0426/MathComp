@@ -10,17 +10,18 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import subprocess
 import sys
-
-n = 1 # beams
-n_sol = 5
-samples = 16
+import math
+n = 4 # beams
+n_sol = 6
+samples = 6
 max_depth = 12
 max_pct = 0.8
-temperature = 0.2
+
 min_len = 77
 quantile = 0.75
 
 version = sys.argv[1]
+temperature = max(0.6/math.sqrt(float(version)),0.2)
 MODEL_PATH = f"../Model/PRM_LORA{version}_merged_code_policy_01" #_merged_code_policy_01SFT
 
 
@@ -238,7 +239,8 @@ def HasAnswer(text):
     patterns = [
         r'answer is.*\\boxed\{(.*?)\}',
         r"answer is[:\s]*\$(.+?)\$",
-        r"answer is[:\s]*(.+)"
+        r"answer is[:\s]*(.+)",
+        r'print\((\d+)\)'
     ]
     for pattern in patterns:
         match = re.search(pattern, text)
@@ -250,7 +252,8 @@ def extract_number(text):
     patterns = [
         r'answer is.*\\boxed\{(.*?)\}',
         r"answer is[:\s]*\$(.+?)\$",
-        r"answer is[:\s]*(.+)"
+        r"answer is[:\s]*(.+)",
+        r'print\((\d+)\)'
     ]
     for pattern in patterns:
         match = list(re.finditer(pattern, text))
@@ -364,6 +367,7 @@ while (current_level < max_depth) and (current_level_nodes):
     prm_model.to('cpu')
     llm,tokenizer = create_llm()
     
+    # current_level_nodes,lengths = get_next_nodes(prm_inputs,advantages,lengths)
     current_level_nodes,lengths = get_next_nodes(prm_inputs,prm_scores,lengths)
     current_level += 1
 
@@ -497,8 +501,8 @@ _,_,best_mean_acc,best_max_acc,_ = log_data.iloc[-1].tolist()
 with open('training_log.csv', mode='a', newline='') as log_file:
     log_writer = csv.writer(log_file)
     log_writer.writerow([version, auc, mean_acc, max_acc, value_counts])
-if mean_acc > best_mean_acc or max_acc > best_max_acc:
-    sys.exit(0)
-else:
-    print("no improve!")
-    sys.exit(1)
+# if mean_acc > best_mean_acc or max_acc > best_max_acc:
+#     sys.exit(0)
+# else:
+#     print("no improve!")
+#     sys.exit(1)
