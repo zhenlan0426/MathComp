@@ -18,7 +18,7 @@ max_depth = 12
 max_pct = 0.8
 
 min_len = 77
-quantile = 0.75
+quantile = 0.85
 
 version = sys.argv[1]
 temperature = max(0.6/math.sqrt(float(version)),0.2)
@@ -402,10 +402,15 @@ def extract_code(text):
     return text[:match.end()].strip()
   raise Exception("no match")
 
+from collections import defaultdict
+IsCorrect = []
 def process_paths(args):
     paths, y, idx = args
     paths = [p for p in paths if p]
+    paths.sort(key=lambda x: x[0], reverse=True)
     out = [] # (isCorrect,score,node,code,prob_i,exit_i)
+    answer = [-1,-1] # (highest score answer, groupby highest answer)
+    groupbys = defaultdict(int)
     for j,path in enumerate(paths):# path (score,node)
         input = path[1]
         if "No Python code." in input:
@@ -414,6 +419,10 @@ def process_paths(args):
                 out.append([0,path[0],path[1],'no code',idx,7])
             else:
                 out.append([int(y==yhat),path[0],path[1],'no code',idx,8])
+                if is_integer(yhat) and is_between_0_and_999(yhat): # track inference answer
+                    if answer[0] == -1: # first time
+                        answer[0] = yhat
+                    groupbys[int(yhat)] += path[0]
         else: # code
             if input[-12:]=="print(result": # stop token was not included. print(result) might miss a ")"
                 input += ")"
@@ -451,6 +460,10 @@ def process_paths(args):
                     answer = eval(stdout)
                     if is_integer(answer):
                         out.append([int(int(answer)==y),path[0],node,code,idx,4])
+                    if is_integer(yhat) and is_between_0_and_999(yhat): # track inference answer
+                        if answer[0] == -1:
+                            answer[0] = yhat
+                        groupbys[int(yhat)] += path[0]
                         with open(f'temp/4/code_{idx}_{j}.py', 'w') as fout:
                             fout.write(code)                     
                         continue
@@ -466,6 +479,9 @@ def process_paths(args):
                     with open(f'temp/6/code_{idx}_{j}.py', 'w') as fout:
                         fout.write(code)
                     continue
+    if groupbys: # non-empty
+        answer[1] = max(groupbys.items(),key=lambda x:x[1])[0]
+    IsCorrect.append([int(answer[0]==y),int(answer[1]==y)])
     return out
 
 # Prepare arguments for multiprocessing
@@ -474,6 +490,8 @@ arguments = [(paths, y, idx) for idx, (paths, y) in enumerate(zip(completed_path
 with Pool(processes=16) as pool:
     results = pool.map(process_paths, arguments)
 completed_paths_y = list(chain(*results))
+first_answer, group_answer = list(zip(*IsCorrect))
+first_answer, group_answer = sum(first_answer), sum(group_answer)
 
 #### Save outputs
 import pickle
@@ -501,6 +519,11 @@ _,_,best_mean_acc,best_max_acc,_ = log_data.iloc[-1].tolist()
 with open('training_log.csv', mode='a', newline='') as log_file:
     log_writer = csv.writer(log_file)
     log_writer.writerow([version, auc, mean_acc, max_acc, value_counts])
+with open('training_log2.csv', mode='a', newline='') as log_file:
+    log_writer = csv.writer(log_file)
+    if not os.path.exists('training_log2.csv'):
+        log_writer.writerow(['version', 'auc', 'first_answer', 'group_answer', 'mean_acc', 'max_acc', 'value_counts'])
+    log_writer.writerow([version, auc, first_answer, group_answer, mean_acc, max_acc, value_counts])
 # if mean_acc > best_mean_acc or max_acc > best_max_acc:
 #     sys.exit(0)
 # else:
