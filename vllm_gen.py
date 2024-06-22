@@ -409,7 +409,7 @@ def process_paths(args):
     paths = [p for p in paths if p]
     paths.sort(key=lambda x: x[0], reverse=True)
     out = [] # (isCorrect,score,node,code,prob_i,exit_i)
-    answer = [-1,-1] # (highest score answer, groupby highest answer)
+    answers = [-1,-1] # (highest score answer, groupby highest answer)
     groupbys = defaultdict(int)
     for j,path in enumerate(paths):# path (score,node)
         input = path[1]
@@ -420,8 +420,8 @@ def process_paths(args):
             else:
                 out.append([int(y==yhat),path[0],path[1],'no code',idx,8])
                 if is_integer(yhat) and is_between_0_and_999(yhat): # track inference answer
-                    if answer[0] == -1: # first time
-                        answer[0] = yhat
+                    if answers[0] == -1: # first time
+                        answers[0] = yhat
                     groupbys[int(yhat)] += path[0]
         else: # code
             if input[-12:]=="print(result": # stop token was not included. print(result) might miss a ")"
@@ -460,10 +460,10 @@ def process_paths(args):
                     answer = eval(stdout)
                     if is_integer(answer):
                         out.append([int(int(answer)==y),path[0],node,code,idx,4])
-                    if is_integer(yhat) and is_between_0_and_999(yhat): # track inference answer
-                        if answer[0] == -1:
-                            answer[0] = yhat
-                        groupbys[int(yhat)] += path[0]
+                    if is_integer(answer) and is_between_0_and_999(answer): # track inference answer
+                        if answers[0] == -1: # first time
+                            answers[0] = answer
+                        groupbys[int(answer)] += path[0]
                         with open(f'temp/4/code_{idx}_{j}.py', 'w') as fout:
                             fout.write(code)                     
                         continue
@@ -480,8 +480,8 @@ def process_paths(args):
                         fout.write(code)
                     continue
     if groupbys: # non-empty
-        answer[1] = max(groupbys.items(),key=lambda x:x[1])[0]
-    IsCorrect.append([int(answer[0]==y),int(answer[1]==y)])
+        answers[1] = max(groupbys.items(),key=lambda x:x[1])[0]
+    IsCorrect.append([int(answers[0]==y),int(answers[1]==y)])
     return out
 
 # Prepare arguments for multiprocessing
