@@ -6,6 +6,7 @@ gpu_memory_utilization = 0.95
 
 import torch
 import pandas as pd
+import numpy as np
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import subprocess
@@ -14,7 +15,7 @@ import math
 n = 4 # beams
 n_sol = 6
 samples = 6
-max_depth = 12
+max_depth = 9
 max_pct = 0.8
 
 min_len = 77
@@ -403,8 +404,9 @@ def extract_code(text):
   raise Exception("no match")
 
 from collections import defaultdict
-IsCorrect = []
+
 def process_paths(args):
+    IsCorrect = []
     paths, y, idx = args
     paths = [p for p in paths if p]
     paths.sort(key=lambda x: x[0], reverse=True)
@@ -482,16 +484,16 @@ def process_paths(args):
     if groupbys: # non-empty
         answers[1] = max(groupbys.items(),key=lambda x:x[1])[0]
     IsCorrect.append([int(answers[0]==y),int(answers[1]==y)])
-    return out
+    return out,IsCorrect
 
 # Prepare arguments for multiprocessing
 ys = df.final_answer.tolist()
 arguments = [(paths, y, idx) for idx, (paths, y) in enumerate(zip(completed_paths, ys))]
 with Pool(processes=16) as pool:
-    results = pool.map(process_paths, arguments)
+    outs = pool.map(process_paths, arguments)
+results, IsCorrects = zip(*outs)
 completed_paths_y = list(chain(*results))
-first_answer, group_answer = list(zip(*IsCorrect))
-first_answer, group_answer = sum(first_answer), sum(group_answer)
+first_answer, group_answer = np.array(IsCorrects)[:,0].sum(0).tolist()
 
 #### Save outputs
 import pickle
